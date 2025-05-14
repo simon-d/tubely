@@ -1,10 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -40,22 +43,38 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	mediaType := r.Header.Get("Content-Type")
-	file, _, err := r.FormFile("thumbnail")
+	// mediaType := r.Header.Get("Content-Type")
+	file, header, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
 	defer file.Close()
-
-	thumbnailData, err := io.ReadAll(file)
+	mediaTypeHeader := strings.SplitAfter(header.Filename, ".")[1]
+	mediaType, _, err := mime.ParseMediaType(mediaTypeHeader)
+	fmt.Println(mediaType)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		respondWithError(w, http.StatusBadRequest, "failed to parse file type", err)
 		return
 	}
+	if mediaType != "png" && mediaType != "jpg" {
+		respondWithError(w, http.StatusBadRequest, "unsupported file type", err)
+		return
+	}
+	thumbFileName := fmt.Sprintf("/%s.%s", videoIDString, mediaType)
+	thumbFilePath := filepath.Join(cfg.assetsRoot, thumbFileName)
+	thumbFile, err := os.Create(thumbFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to store file", err)
+		return
+	}
+	defer thumbFile.Close()
 
-	thumbnailBase64 := base64.StdEncoding.EncodeToString(thumbnailData)
-	mediaUrl := fmt.Sprintf("data:%s;base64,%s", mediaType, thumbnailBase64)
+	_, err = io.Copy(thumbFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "unable to write file", err)
+		return
+	}
 
 	videoData, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -66,7 +85,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	videoData.ThumbnailURL = &mediaUrl
+	thumbnailPath := fmt.Sprintf("http://localhost:8091/assets/%s", thumbFileName)
+	videoData.ThumbnailURL = &thumbnailPath
 
 	err = cfg.db.UpdateVideo(videoData)
 	if err != nil {
