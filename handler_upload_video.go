@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -65,10 +68,28 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	tmp.Seek(0, io.SeekStart)
 
+	prefix := ""
+	ratio, err := getVideoAspectRatio(tmp.Name())
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "failed processing video", err)
+		return
+	}
+	if ratio == "16/9" {
+		prefix = "landscape"
+	} else if ratio == "9/16" {
+		prefix = "portrait"
+	} else {
+		prefix = "other"
+	}
+
 	key := make([]byte, 32)
 	_, err = rand.Read(key)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "", err)
+		return
+	}
 	fileKey := base64.RawURLEncoding.EncodeToString(key)
-	fileName := fmt.Sprintf("%s.%s", fileKey, mediaType)
+	fileName := fmt.Sprintf("%s/%s.%s", prefix, fileKey, mediaType)
 
 	upload := &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
@@ -93,4 +114,58 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	err = cfg.db.UpdateVideo(vid)
 
 	respondWithJSON(w, http.StatusOK, vid)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	type VideoStream struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	}
+	type FFProbeOutput struct {
+		Streams []VideoStream `json:"streams"`
+	}
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println("error:", err)
+		return "", err
+	}
+
+	var result FFProbeOutput
+	err = json.Unmarshal(out.Bytes(), &result)
+	if err != nil {
+		return "", err
+	}
+
+	width := result.Streams[0].Width
+	height := result.Streams[0].Height
+	ratio := getAspectRatio(width, height)
+
+	return ratio, nil
+}
+
+func getAspectRatio(width, height int) string {
+	if height == 0 {
+		return "other"
+	}
+
+	ratio := float64(width) / float64(height)
+	epsilon := 0.01
+
+	if abs(ratio-16.0/9.0) < epsilon {
+		return "16/9"
+	} else if abs(ratio-9.0/16.0) < epsilon {
+		return "9/16"
+	}
+	return "other"
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
