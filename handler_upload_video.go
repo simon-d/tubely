@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -13,12 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
-	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -124,9 +121,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// videoURL := fmt.Sprintf("https://%s.s3.amazonaws.com/%s", cfg.s3Bucket, fileName)
-	// videoURL, err := generatePresignedURL(cfg.s3Client, cfg.s3Bucket, fileName, time.Hour*1)
-	videoURL := fmt.Sprintf("%s,%s", cfg.s3Bucket, fileName)
+	videoURL := fmt.Sprintf("https://%s/%s", cfg.s3CfDistribution, fileName)
+
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "failed to generate resource url", err)
 		return
@@ -138,44 +134,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	vid, _ = cfg.dbVideoToSignedVideo(vid)
 	respondWithJSON(w, http.StatusOK, vid)
-}
-
-func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
-
-	presignClient := s3.NewPresignClient(s3Client)
-	params := &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	}
-
-	r, err := presignClient.PresignGetObject(context.TODO(), params, s3.WithPresignExpires(expireTime))
-	if err != nil {
-		return "", err
-	}
-
-	return r.URL, nil
-}
-
-func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
-	if video.VideoURL == nil || len(*video.VideoURL) == 0 {
-		return video, nil
-	}
-	parts := strings.Split(*video.VideoURL, ",")
-	if len(parts) != 2 {
-		return video, fmt.Errorf("to many parts in vid url")
-	}
-	bucket := parts[0]
-	key := parts[1]
-
-	vURL, err := generatePresignedURL(cfg.s3Client, bucket, key, time.Minute*5)
-	if err != nil {
-		return video, err
-	}
-
-	video.VideoURL = &vURL
-	return video, nil
 }
 
 func getVideoAspectRatio(filePath string) (string, error) {
